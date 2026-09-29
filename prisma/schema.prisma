@@ -18,6 +18,36 @@ enum TaskStatus {
   DONE
 }
 
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REVOKED
+}
+
+enum NotificationType {
+  INVITATION_RECEIVED
+  INVITATION_ACCEPTED
+  INVITATION_DECLINED
+  ADDED_TO_PROJECT
+  TASK_ASSIGNED
+  TASK_COMMENTED
+}
+
+enum ActivityType {
+  PROJECT_CREATED
+  TASK_CREATED
+  TASK_MOVED
+  TASK_ASSIGNED
+  TASK_DELETED
+  COMMENT_ADDED
+  MEMBER_JOINED
+  MEMBER_ADDED
+  MEMBER_REMOVED
+  MEMBER_LEFT
+  MEMBER_ROLE_CHANGED
+}
+
 model User {
   id        String    @id @default(uuid())
   name      String
@@ -27,6 +57,15 @@ model User {
 
   memberships ProjectMember[]
   tasks       Task[]          @relation("AssignedTasks")
+
+  invitationsSent     Invitation[]   @relation("InvitationsSent")
+  invitationsReceived Invitation[]   @relation("InvitationsReceived")
+  team                TeamMember[]   @relation("TeamManager")
+  teamsJoined         TeamMember[]   @relation("TeamMember")
+  notifications       Notification[] @relation("NotificationRecipient")
+  notificationsCaused Notification[] @relation("NotificationActor")
+  comments            Comment[]
+  activities          Activity[]
 }
 
 model Project {
@@ -35,8 +74,11 @@ model Project {
   description String?
   createdAt   DateTime @default(now())
 
-  members ProjectMember[]
-  tasks   Task[]
+  members       ProjectMember[]
+  tasks         Task[]
+  invitations   Invitation[]
+  activities    Activity[]
+  notifications Notification[]
 }
 
 model ProjectMember {
@@ -50,6 +92,8 @@ model ProjectMember {
   projectId String
 
   @@unique([userId, projectId])
+  // O @@unique acima começa por userId; este índice cobre "membros do projeto X"
+  @@index([projectId])
 }
 
 model Task {
@@ -57,6 +101,9 @@ model Task {
   title       String
   description String?
   status      TaskStatus @default(TODO)
+  // Ordem dentro da coluna. É decimal para que mover uma tarefa altere só ela:
+  // a nova posição fica entre as vizinhas (ex.: entre 1 e 2 → 1.5).
+  position    Float      @default(0)
   createdAt   DateTime   @default(now())
 
   project   Project @relation(fields: [projectId], references: [id])
@@ -64,4 +111,116 @@ model Task {
 
   assignee   User?   @relation("AssignedTasks", fields: [assigneeId], references: [id])
   assigneeId String?
+
+  comments      Comment[]
+  activities    Activity[]
+  notifications Notification[]
+
+  // Listagem do quadro: tarefas de um projeto, por coluna, já na ordem certa
+  @@index([projectId, status, position])
+  @@index([assigneeId])
+}
+
+/// Convite para um projeto ou, sem projeto, só para a equipe de quem convidou.
+/// A pessoa só entra quando aceita (no app ou pelo link).
+model Invitation {
+  id          String           @id @default(uuid())
+  // E-mail normalizado de quem foi convidado. Aceitar pelo link exige estar
+  // logado com este e-mail: um link vazado não serve para outra pessoa.
+  email       String
+  role        Role             @default(MEMBER)
+  jobTitle    String?
+  // Só o hash SHA-256 do token do link fica no banco: quem ler o banco
+  // não consegue montar um link válido (mesma ideia do hash de senha)
+  tokenHash   String           @unique
+  status      InvitationStatus @default(PENDING)
+  expiresAt   DateTime
+  respondedAt DateTime?
+  createdAt   DateTime         @default(now())
+
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId   String?
+  invitedBy   User     @relation("InvitationsSent", fields: [invitedById], references: [id], onDelete: Cascade)
+  invitedById String
+  // Preenchido quando a conta já existia no momento do convite (ou quando a
+  // pessoa aceita pelo link). Só esses convites aparecem dentro do app.
+  invitee     User?    @relation("InvitationsReceived", fields: [inviteeId], references: [id], onDelete: Cascade)
+  inviteeId   String?
+
+  notifications Notification[]
+
+  @@index([projectId, status])
+  @@index([invitedById, status])
+  @@index([inviteeId, status])
+}
+
+/// Equipe de uma pessoa (os "funcionários" dela), com o cargo de cada um.
+model TeamMember {
+  id        String   @id @default(uuid())
+  jobTitle  String?
+  createdAt DateTime @default(now())
+
+  manager   User   @relation("TeamManager", fields: [managerId], references: [id], onDelete: Cascade)
+  managerId String
+  user      User   @relation("TeamMember", fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+
+  @@unique([managerId, userId])
+  @@index([userId])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  type      NotificationType
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user         User        @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  actor        User?       @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorId      String?
+  project      Project?    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String?
+  task         Task?       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId       String?
+  invitation   Invitation? @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  invitationId String?
+
+  // Sininho: "as mais recentes de fulano" e "quantas ainda não foram lidas"
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  task     Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId   String
+  author   User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId String
+
+  @@index([taskId, createdAt])
+}
+
+/// Histórico do projeto: quem fez o quê e quando.
+model Activity {
+  id        String       @id @default(uuid())
+  type      ActivityType
+  // Retrato do momento (título da tarefa, nome da pessoa, colunas...):
+  // o histórico continua legível mesmo se a tarefa for renomeada ou excluída
+  meta      Json         @default("{}")
+  createdAt DateTime     @default(now())
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  actor     User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorId   String?
+  task      Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  taskId    String?
+
+  @@index([projectId, createdAt])
+  @@index([taskId, createdAt])
 }

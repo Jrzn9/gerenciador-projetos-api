@@ -2,7 +2,7 @@ const prisma = require('../src/lib/prisma');
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "Task", "ProjectMember", "Project", "User" RESTART IDENTITY CASCADE;'
+    'TRUNCATE TABLE "Activity", "Comment", "Notification", "Invitation", "TeamMember", "Task", "ProjectMember", "Project", "User" RESTART IDENTITY CASCADE;'
   );
 });
 

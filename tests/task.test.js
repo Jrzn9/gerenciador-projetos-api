@@ -104,4 +104,55 @@ describe('rotas de tarefas', () => {
     expect(stillThere.body).toHaveLength(1);
     expect(stillThere.body[0].status).toBe('TODO');
   });
+
+  it('rejeita filtro de status inválido com 400 (antes derrubava o servidor)', async () => {
+    const { token } = await createUser({ email: 'owner@teste.com' });
+    const project = await createProject(token);
+
+    const res = await request(app)
+      .get(`/projects/${project.id}/tasks?status=QUALQUER`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejeita responsável inexistente com 400 (antes derrubava o servidor)', async () => {
+    const { token } = await createUser({ email: 'owner@teste.com' });
+    const project = await createProject(token);
+
+    const res = await request(app)
+      .post(`/projects/${project.id}/tasks`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Tarefa', assigneeId: '00000000-0000-4000-8000-000000000000' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('só aceita como responsável quem é membro do projeto', async () => {
+    const { token: tokenOwner } = await createUser({ email: 'owner@teste.com' });
+    const { token: tokenOutsider } = await createUser({ email: 'fora@teste.com' });
+    const project = await createProject(tokenOwner);
+
+    const outsider = await request(app).get('/auth/me').set('Authorization', `Bearer ${tokenOutsider}`);
+    const owner = await request(app).get('/auth/me').set('Authorization', `Bearer ${tokenOwner}`);
+
+    const withOutsider = await request(app)
+      .post(`/projects/${project.id}/tasks`)
+      .set('Authorization', `Bearer ${tokenOwner}`)
+      .send({ title: 'Tarefa', assigneeId: outsider.body.id });
+    expect(withOutsider.status).toBe(400);
+
+    const withOwner = await request(app)
+      .post(`/projects/${project.id}/tasks`)
+      .set('Authorization', `Bearer ${tokenOwner}`)
+      .send({ title: 'Tarefa', assigneeId: owner.body.id });
+    expect(withOwner.status).toBe(201);
+
+    const unassign = await request(app)
+      .patch(`/projects/${project.id}/tasks/${withOwner.body.id}`)
+      .set('Authorization', `Bearer ${tokenOwner}`)
+      .send({ assigneeId: null });
+    expect(unassign.status).toBe(200);
+    expect(unassign.body.assigneeId).toBeNull();
+  });
 });
