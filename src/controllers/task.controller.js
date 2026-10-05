@@ -17,6 +17,8 @@ async function isProjectMember(userId, projectId) {
 }
 
 const ASSIGNEE_ERROR = { error: 'O responsável precisa ser membro do projeto' };
+// Abaixo disso, duas tarefas vizinhas estão "coladas" e a coluna é renumerada
+const MIN_POSITION_GAP = 1e-6;
 const NOT_FOUND_ERROR = { error: 'Tarefa não encontrada' };
 
 // Toda tarefa volta com o nº de comentários (o card mostra o balão 💬)
@@ -160,6 +162,33 @@ async function update(req, res) {
       await tx.activity.createMany({
         data: events.map((event) => ({ ...event, projectId, taskId, actorId: req.userId })),
       });
+    }
+
+    // Posição decimal "gastando": cada vez que alguém insere entre as mesmas duas
+    // tarefas, a diferença entre elas cai pela metade. Depois de ~50 vezes ela
+    // chegaria no limite de precisão do número e a ordem pararia de mudar.
+    // Bem antes disso, renumeramos a coluna (1, 2, 3...) mantendo a ordem.
+    if (parsed.data.position !== undefined) {
+      const crowded = await tx.task.count({
+        where: {
+          projectId,
+          status: updated.status,
+          id: { not: taskId },
+          position: { gte: updated.position - MIN_POSITION_GAP, lte: updated.position + MIN_POSITION_GAP },
+        },
+      });
+      if (crowded > 0) {
+        await tx.$executeRaw`
+          UPDATE "Task" AS t SET "position" = r.rn
+          FROM (
+            SELECT id, ROW_NUMBER() OVER (ORDER BY "position", "createdAt") AS rn
+            FROM "Task" WHERE "projectId" = ${projectId} AND "status" = ${updated.status}::"TaskStatus"
+          ) AS r
+          WHERE t.id = r.id`;
+        const renumbered = await tx.task.findUnique({ where: { id: taskId }, include: taskInclude });
+        // O front recarrega as tarefas: as posições das outras mudaram também
+        return { ...renumbered, columnRenumbered: true };
+      }
     }
     return updated;
   });

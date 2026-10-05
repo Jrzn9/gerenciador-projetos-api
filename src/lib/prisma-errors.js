@@ -5,4 +5,13 @@ function isRecordNotFound(err) {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025';
 }
 
-module.exports = { isRecordNotFound };
+/**
+ * P2002: violou um @unique. Acontece quando duas requisições iguais chegam ao
+ * mesmo tempo (ex.: clique duplo em "criar conta" ou "aceitar convite"): a
+ * checagem passa nas duas, mas o banco só deixa uma gravar.
+ */
+function isUniqueViolation(err) {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+}
+
+module.exports = { isRecordNotFound, isUniqueViolation };

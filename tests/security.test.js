@@ -27,6 +27,13 @@ describe('cabeçalhos e corpo das requisições', () => {
     const res = await register({ name: 'x'.repeat(20 * 1024), email: 'a@teste.com', password: 'senha-forte-123' });
     expect(res.status).toBe(413);
   });
+
+  it('clique duplo no cadastro: uma conta é criada e a outra recebe 409 (nunca 500)', async () => {
+    const body = { name: 'Dupla', email: 'dupla@teste.com', password: 'senha-forte-123' };
+    const results = await Promise.all([register(body), register(body)]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+  });
 });
 
 describe('senhas', () => {

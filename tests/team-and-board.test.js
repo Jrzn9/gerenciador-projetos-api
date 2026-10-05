@@ -60,6 +60,29 @@ describe('ordem das tarefas no quadro', () => {
     expect(list.body.map((t) => t.title)).toEqual(['Tarefa A', 'Tarefa C', 'Tarefa B']);
   });
 
+  it('renumera a coluna quando duas tarefas ficam "coladas" (posição decimal esgotando)', async () => {
+    const { owner, tasksUrl } = await setup();
+    const created = [];
+    for (const title of ['Tarefa A', 'Tarefa B', 'Tarefa C']) {
+      created.push((await request(app).post(tasksUrl).set(owner).send({ title })).body);
+    }
+
+    // Uma inserção normal não renumera nada
+    const normal = await request(app).patch(`${tasksUrl}/${created[2].id}`).set(owner).send({ position: 1.5 });
+    expect(normal.body.columnRenumbered).toBeUndefined();
+
+    // C quase em cima de A (como depois de dezenas de inserções no mesmo lugar)
+    const crowded = await request(app)
+      .patch(`${tasksUrl}/${created[2].id}`)
+      .set(owner)
+      .send({ position: created[0].position + 1e-9 });
+    expect(crowded.body.columnRenumbered).toBe(true);
+
+    const list = (await request(app).get(tasksUrl).set(owner)).body;
+    expect(list.map((t) => t.title)).toEqual(['Tarefa A', 'Tarefa C', 'Tarefa B']);
+    expect(list.map((t) => t.position)).toEqual([1, 2, 3]);
+  });
+
   it('recusa posição inválida', async () => {
     const { owner, tasksUrl } = await setup();
     const task = (await request(app).post(tasksUrl).set(owner).send({ title: 'Tarefa A' })).body;
@@ -142,5 +165,56 @@ describe('gestão de membros', () => {
 
     await request(app).patch(`${membersUrl}/${memberId}`).set(owner).send({ role: 'OWNER' });
     expect((await request(app).delete(`${membersUrl}/${ownerId}`).set(owner)).status).toBe(204);
+  });
+});
+
+describe('dois donos agindo ao mesmo tempo', () => {
+  /** Dono + membro promovido a dono: dois donos no projeto. */
+  async function twoOwners() {
+    const base = await setup();
+    const [{ id: ownerId }, { id: memberId }] = [await me(base.owner), await me(base.member)];
+    await request(app).patch(`${base.membersUrl}/${memberId}`).set(base.owner).send({ role: 'OWNER' });
+    const ownersLeft = async () => {
+      const detail = await request(app).get(`/projects/${base.projectId}`).set(base.owner);
+      const members = detail.status === 200 ? detail.body.members : (await request(app).get(`/projects/${base.projectId}`).set(base.member)).body.members;
+      return members.filter((m) => m.role === 'OWNER').length;
+    };
+    return { ...base, ownerId, memberId, ownersLeft };
+  }
+
+  it('um remove o outro: só um consegue e o projeto continua com dono', async () => {
+    const { owner, member, membersUrl, ownerId, memberId, ownersLeft } = await twoOwners();
+
+    const results = await Promise.all([
+      request(app).delete(`${membersUrl}/${memberId}`).set(owner),
+      request(app).delete(`${membersUrl}/${ownerId}`).set(member),
+    ]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([204, 403]);
+    expect(await ownersLeft()).toBe(1);
+  });
+
+  it('os dois saem juntos: um sai e o outro é barrado por ser o último dono', async () => {
+    const { owner, member, membersUrl, ownerId, memberId, ownersLeft } = await twoOwners();
+
+    const results = await Promise.all([
+      request(app).delete(`${membersUrl}/${ownerId}`).set(owner),
+      request(app).delete(`${membersUrl}/${memberId}`).set(member),
+    ]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([204, 400]);
+    expect(await ownersLeft()).toBe(1);
+  });
+
+  it('um rebaixa o outro: só um consegue e o projeto continua com dono', async () => {
+    const { owner, member, membersUrl, ownerId, memberId, ownersLeft } = await twoOwners();
+
+    const results = await Promise.all([
+      request(app).patch(`${membersUrl}/${memberId}`).set(owner).send({ role: 'MEMBER' }),
+      request(app).patch(`${membersUrl}/${ownerId}`).set(member).send({ role: 'MEMBER' }),
+    ]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([200, 403]);
+    expect(await ownersLeft()).toBe(1);
   });
 });

@@ -126,7 +126,7 @@ async function addMembers(req, res) {
   const [team, existing] = await Promise.all([
     prisma.teamMember.findMany({
       where: { managerId: req.userId, userId: { in: userIds } },
-      select: { user: { select: { id: true, name: true } } },
+      select: { user: { select: { id: true, name: true, email: true } } },
     }),
     prisma.projectMember.findMany({ where: { projectId, userId: { in: userIds } }, select: { userId: true } }),
   ]);
@@ -150,6 +150,24 @@ async function addMembers(req, res) {
     await tx.activity.createMany({
       data: people.map((user) => ({ type: 'MEMBER_ADDED', projectId, actorId: req.userId, meta: { name: user.name } })),
     });
+
+    // Quem já tinha convite pendente para este projeto acabou de entrar: o convite
+    // passa a valer como aceito (senão continuaria "pendente" na lista do dono e
+    // com o botão "Aceitar" no sininho da pessoa)
+    const now = new Date();
+    for (const user of people) {
+      const { count } = await tx.invitation.updateMany({
+        where: { projectId, email: user.email, status: 'PENDING' },
+        data: { status: 'ACCEPTED', respondedAt: now, inviteeId: user.id },
+      });
+      if (count > 0) {
+        await tx.notification.updateMany({
+          where: { userId: user.id, projectId, type: 'INVITATION_RECEIVED', readAt: null },
+          data: { readAt: now },
+        });
+      }
+    }
+
     return tx.projectMember.findMany({
       where: { projectId, userId: { in: ids } },
       orderBy: { createdAt: 'asc' },
@@ -163,6 +181,17 @@ async function addMembers(req, res) {
 const updateRoleSchema = z.object({
   role: z.enum(['OWNER', 'MEMBER']),
 });
+
+/**
+ * Trava a linha do projeto até o fim da transação. Mudanças nos membros do
+ * mesmo projeto entram em fila: sem isso, dois donos removendo (ou rebaixando)
+ * um ao outro ao mesmo tempo passariam pela checagem e o projeto ficaria sem dono.
+ */
+function lockProject(tx, projectId) {
+  return tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${projectId} FOR UPDATE`;
+}
+
+const NOT_OWNER = { error: 'Apenas o dono do projeto pode fazer isso' };
 
 /** PATCH /projects/:projectId/members/:userId — só OWNER. */
 async function updateMemberRole(req, res) {
@@ -180,6 +209,15 @@ async function updateMemberRole(req, res) {
 
   try {
     const membership = await prisma.$transaction(async (tx) => {
+      await lockProject(tx, projectId);
+
+      // Quem pede ainda é dono? Outro dono pode tê-lo rebaixado agora há pouco
+      const requester = await tx.projectMember.findUnique({
+        where: { userId_projectId: { userId: req.userId, projectId } },
+        select: { role: true },
+      });
+      if (requester?.role !== 'OWNER') return null;
+
       const updated = await tx.projectMember.update({
         where: { userId_projectId: { userId, projectId } },
         data: { role: parsed.data.role },
@@ -195,6 +233,7 @@ async function updateMemberRole(req, res) {
       });
       return updated;
     });
+    if (!membership) return res.status(403).json(NOT_OWNER);
     return res.json(membership);
   } catch (err) {
     if (isRecordNotFound(err)) return res.status(404).json({ error: 'Essa pessoa não faz parte do projeto' });
@@ -215,40 +254,54 @@ async function removeMember(req, res) {
     return res.status(403).json({ error: 'Apenas o dono do projeto pode remover pessoas' });
   }
 
-  const target = await prisma.projectMember.findUnique({
-    where: { userId_projectId: { userId, projectId } },
-    select: { role: true, user: { select: { name: true } } },
-  });
+  // As checagens rodam DENTRO da transação, com o projeto travado (ver lockProject)
+  const outcome = await prisma.$transaction(async (tx) => {
+    await lockProject(tx, projectId);
 
-  if (!target) {
-    return res.status(404).json({ error: 'Essa pessoa não faz parte do projeto' });
-  }
-
-  if (target.role === 'OWNER') {
-    const owners = await prisma.projectMember.count({ where: { projectId, role: 'OWNER' } });
-    if (owners <= 1) {
-      return res
-        .status(400)
-        .json({ error: 'O projeto precisa de pelo menos um dono. Promova outra pessoa a dono antes.' });
+    if (!isSelf) {
+      // Quem pede ainda é dono? Outro dono pode tê-lo removido agora há pouco
+      const requester = await tx.projectMember.findUnique({
+        where: { userId_projectId: { userId: req.userId, projectId } },
+        select: { role: true },
+      });
+      if (requester?.role !== 'OWNER') return { status: 403, body: NOT_OWNER };
     }
-  }
 
-  await prisma.$transaction([
-    prisma.task.updateMany({ where: { projectId, assigneeId: userId }, data: { assigneeId: null } }),
-    prisma.projectMember.delete({ where: { userId_projectId: { userId, projectId } } }),
+    const target = await tx.projectMember.findUnique({
+      where: { userId_projectId: { userId, projectId } },
+      select: { role: true, user: { select: { name: true } } },
+    });
+    if (!target) {
+      return { status: 404, body: { error: 'Essa pessoa não faz parte do projeto' } };
+    }
+
+    if (target.role === 'OWNER') {
+      const owners = await tx.projectMember.count({ where: { projectId, role: 'OWNER' } });
+      if (owners <= 1) {
+        return {
+          status: 400,
+          body: { error: 'O projeto precisa de pelo menos um dono. Promova outra pessoa a dono antes.' },
+        };
+      }
+    }
+
+    await tx.task.updateMany({ where: { projectId, assigneeId: userId }, data: { assigneeId: null } });
+    await tx.projectMember.delete({ where: { userId_projectId: { userId, projectId } } });
     // Notificações de um projeto que a pessoa não acessa mais só levariam a um erro 403
-    prisma.notification.deleteMany({ where: { userId, projectId } }),
-    prisma.activity.create({
+    await tx.notification.deleteMany({ where: { userId, projectId } });
+    await tx.activity.create({
       data: {
         type: isSelf ? 'MEMBER_LEFT' : 'MEMBER_REMOVED',
         projectId,
         actorId: req.userId,
         meta: { name: target.user.name },
       },
-    }),
-  ]);
+    });
+    return { status: 204 };
+  });
 
-  return res.status(204).send();
+  if (outcome.status === 204) return res.status(204).send();
+  return res.status(outcome.status).json(outcome.body);
 }
 
 async function update(req, res) {

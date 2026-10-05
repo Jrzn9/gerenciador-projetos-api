@@ -275,6 +275,22 @@ describe('equipe', () => {
     expect(again.status).toBe(409);
   });
 
+  it('adicionar da equipe quem tinha convite pendente fecha o convite (não fica "pendente" à toa)', async () => {
+    const { owner, ana, projectId, invitesUrl } = await setup();
+    // Ana entra na equipe (convite de equipe) e também recebe um convite para o projeto
+    const teamInvite = await request(app).post('/team/invitations').set(owner).send({ email: 'ana@teste.com' });
+    await request(app).post('/invitations/link/accept').set(ana).send({ token: teamInvite.body.token });
+    const projectInvite = await request(app).post(invitesUrl).set(owner).send({ email: 'ana@teste.com' });
+    const { id: anaId } = await me(ana);
+
+    await request(app).post(`/projects/${projectId}/members`).set(owner).send({ userIds: [anaId] });
+
+    expect((await request(app).get(invitesUrl).set(owner)).body).toHaveLength(0);
+    expect((await request(app).get('/invitations').set(ana)).body).toHaveLength(0);
+    const link = await request(app).post('/invitations/link/preview').send({ token: projectInvite.body.token });
+    expect(link.body.status).toBe('ACCEPTED');
+  });
+
   it('não dá para adicionar direto quem não é da sua equipe', async () => {
     const { owner, ana, projectId } = await setup();
     const { id: anaId } = await me(ana);

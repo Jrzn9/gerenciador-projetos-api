@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
 const config = require('./config');
+const { isRecordNotFound, isUniqueViolation } = require('./lib/prisma-errors');
 const authRoutes = require('./routes/auth.routes');
 const projectRoutes = require('./routes/project.routes');
 const invitationRoutes = require('./routes/invitation.routes');
@@ -41,6 +42,14 @@ app.use((err, req, res, next) => {
   }
   if (err.type === 'entity.too.large') {
     return res.status(413).json({ error: 'Corpo da requisição grande demais' });
+  }
+  // Duas requisições iguais ao mesmo tempo: a segunda esbarra no @unique do banco
+  if (isUniqueViolation(err)) {
+    return res.status(409).json({ error: 'Esse registro já existe. Atualize a página e tente novamente.' });
+  }
+  // O registro sumiu no meio da operação (ex.: o projeto foi excluído por outra pessoa)
+  if (isRecordNotFound(err)) {
+    return res.status(404).json({ error: 'Registro não encontrado. Ele pode ter sido excluído; atualize a página.' });
   }
 
   // Detalhes do erro ficam só no log do servidor, nunca na resposta
