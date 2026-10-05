@@ -6,6 +6,10 @@ API REST para gerenciamento de projetos e tarefas, no estilo de um quadro Kanban
 
 Desenvolvida com Node.js, Express e Prisma ORM sobre PostgreSQL, como projeto de estudo e portfólio.
 
+O front-end em Angular que consome esta API está em [gerenciador-projetos-web](https://github.com/Jrzn9/gerenciador-projetos-web), com mais prints das telas.
+
+![Quadro Kanban do front-end consumindo esta API](https://raw.githubusercontent.com/Jrzn9/gerenciador-projetos-web/main/docs/prints/quadro.png)
+
 ## Funcionalidades
 
 - Cadastro e autenticação de usuários com JWT
