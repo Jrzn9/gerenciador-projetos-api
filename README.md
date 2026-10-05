@@ -1,5 +1,7 @@
 # Gerenciador de Projetos API
 
+[![CI](https://github.com/Jrzn9/gerenciador-projetos-api/actions/workflows/ci.yml/badge.svg)](https://github.com/Jrzn9/gerenciador-projetos-api/actions/workflows/ci.yml)
+
 API REST para gerenciamento de projetos e tarefas, no estilo de um quadro Kanban simplificado. Permite que usuários criem projetos, adicionem outros membros e organizem tarefas por status.
 
 Desenvolvida com Node.js, Express e Prisma ORM sobre PostgreSQL, como projeto de estudo e portfólio.
@@ -294,6 +296,8 @@ Os testes automatizados utilizam um banco de dados PostgreSQL separado do banco 
    ```bash
    npm test
    ```
+
+A cada push, o GitHub Actions sobe um PostgreSQL, aplica as migrações e roda a suíte inteira.
 
 ## Estrutura do projeto
 
